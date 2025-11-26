@@ -1,3 +1,7 @@
+
+# ============================================================
+# 1️⃣ 환경 정의 (Gym 스타일)
+# ============================================================
 import numpy as np
 import gym
 from gym import spaces
@@ -74,33 +78,277 @@ class OthelloEnv(gym.Env):
             done = False
             info = {"invalid_move": True}
             return self.board.copy(), reward, done, info
+
         self.board[x, y] = self.current_player
         flipped = self.flip_discs(x, y)
         reward = flipped
 
-        # 플레이어 교대 후 유효 수 체크
+        # ✅ 코너 보상 추가 (최외곽 4개 코너 칸)
+        corners = [(0,0), (0,self.size-1), (self.size-1,0), (self.size-1, self.size-1)]
+        if (x, y) in corners:
+                reward += 10
+
+        # ✅ 승패 보상 추가
+        if np.all(self.board != 0) or not self.valid_moves():
+            black, white = np.sum(self.board == 1), np.sum(self.board == 2)
+            if black > white and self.current_player == 2:
+                reward += 200
+            elif white > black and self.current_player == 1:
+                reward -= 200
+            done = True
+        else:
+            done = False
+
         self.current_player = self.get_opponent()
         if not self.valid_moves():
             self.current_player = self.get_opponent()
-            if not self.valid_moves():
-                done = True
-            else:
-                done = False
-        else:
-            done = False
+            done = not self.valid_moves()
+
         info = {"flipped": flipped}
         return self.board.copy(), reward, done, info
 
     def render(self):
         print(self.board)
 
-# 테스트 코드
-if __name__ == "__main__":
-    env = OthelloEnv()
-    env.reset()
-    env.render()
-    print("Valid moves:", env.valid_moves())
-    print("플레이어가 위치 19(2,3)에 착수")
-    obs, reward, done, info = env.step(19)
-    env.render()
-    print(f"Reward: {reward}, Done: {done}, Info: {info}")
+
+# ============================================================
+# 2️⃣ Q-learning Agent
+# ============================================================
+import random
+from collections import defaultdict
+
+class QLearningAgent:
+    def __init__(self, env, alpha=0.1, gamma=0.95, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1):
+        self.env = env
+        self.q_table = defaultdict(lambda: np.zeros(env.action_space.n))
+        self.alpha = alpha
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.epsilon_decay = epsilon_decay
+        self.epsilon_min = epsilon_min
+
+    def state_to_key(self, state):
+        return tuple(state.flatten())
+
+    def choose_action(self, state, valid_moves):
+        state_key = self.state_to_key(state)
+        if not valid_moves:
+            return None
+        if random.random() < self.epsilon:
+            return random.choice(list(valid_moves))
+        q_values = self.q_table[state_key]
+        q_values_filtered = [q_values[a] if a in valid_moves else -np.inf for a in range(self.env.action_space.n)]
+        return int(np.argmax(q_values_filtered))
+
+    def learn(self, state, action, reward, next_state, done):
+        state_key = self.state_to_key(state)
+        next_key = self.state_to_key(next_state)
+        q_predict = self.q_table[state_key][action]
+        q_target = reward + (0 if done else self.gamma * np.max(self.q_table[next_key]))
+        self.q_table[state_key][action] += self.alpha * (q_target - q_predict)
+
+    def decay_epsilon(self):
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+
+# ============================================================
+# 3️⃣ CNN 기반 DQN Agent
+# ============================================================
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from collections import deque
+
+class DQNetwork(nn.Module):
+    def __init__(self, input_channels=1, output_dim=64):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(input_channels, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU()
+        )
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64 * 8 * 8, 256),
+            nn.ReLU(),
+            nn.Linear(256, output_dim)
+        )
+
+    def forward(self, x):
+        return self.fc(self.conv(x))
+
+class DQNAgent:
+    def __init__(self, env, gamma=0.95, lr=1e-3, epsilon=1.0, epsilon_decay=0.999, epsilon_min=0.1, buffer_size=50000, batch_size=64):
+        self.env = env
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.epsilon_decay = epsilon_decay
+        self.epsilon_min = epsilon_min
+        self.batch_size = batch_size
+
+        self.memory = deque(maxlen=buffer_size)
+        self.q_net = DQNetwork()
+        self.target_net = DQNetwork()
+        self.optimizer = optim.Adam(self.q_net.parameters(), lr=lr)
+        self.loss_fn = nn.MSELoss()
+        self.update_target()
+
+    def update_target(self):
+        self.target_net.load_state_dict(self.q_net.state_dict())
+
+    def act(self, state, valid_moves):
+        if not valid_moves:
+            return None
+        if np.random.rand() < self.epsilon:
+            return random.choice(list(valid_moves))
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0)
+        q_values = self.q_net(state_tensor).detach().numpy()[0]
+        q_filtered = [q_values[a] if a in valid_moves else -np.inf for a in range(self.env.action_space.n)]
+        return int(np.argmax(q_filtered))
+
+    def remember(self, s, a, r, s2, done):
+        self.memory.append((s, a, r, s2, done))
+
+    def replay(self):
+        if len(self.memory) < self.batch_size:
+            return
+        batch = random.sample(self.memory, self.batch_size)
+        s, a, r, s2, done = zip(*batch)
+        s = torch.FloatTensor(np.array(s)).unsqueeze(1)
+        s2 = torch.FloatTensor(np.array(s2)).unsqueeze(1)
+        r = torch.FloatTensor(r)
+        a = torch.LongTensor(a)
+        done = torch.FloatTensor(done)
+
+        q_values = self.q_net(s).gather(1, a.unsqueeze(1)).squeeze()
+        next_q = self.target_net(s2).max(1)[0]
+        target = r + (1 - done) * self.gamma * next_q
+
+        loss = self.loss_fn(q_values, target.detach())
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+    def decay_epsilon(self):
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+# ============================================================
+# 4️⃣ 공통 학습 루프 (with reward tracking)
+# ============================================================
+import matplotlib.pyplot as plt
+
+def train_agent(agent, episodes=1000):
+    env = agent.env
+    rewards = []
+
+    for ep in range(episodes):
+        state = env.reset()
+        done = False
+        total_reward = 0
+
+        while not done:
+            valid_moves = env.valid_moves()
+            if not valid_moves:
+                break
+            if isinstance(agent, QLearningAgent):
+                action = agent.choose_action(state, valid_moves)
+            else:
+                action = agent.act(state, valid_moves)
+
+            next_state, reward, done, _ = env.step(action)
+            total_reward += reward
+
+            if isinstance(agent, QLearningAgent):
+                agent.learn(state, action, reward, next_state, done)
+            else:
+                agent.remember(state, action, reward, next_state, done)
+                agent.replay()
+
+            state = next_state
+
+        agent.decay_epsilon()
+        if hasattr(agent, 'update_target') and (ep+1) % 50 == 0:
+            agent.update_target()
+        rewards.append(total_reward)
+
+        if (ep+1) % 50 == 0:
+            print(f"{agent.__class__.__name__} Episode {ep+1}, total_reward={total_reward:.2f}, epsilon={agent.epsilon:.3f}")
+
+    # ✅ 학습 곡선 시각화
+    plt.figure(figsize=(8,4))
+    plt.plot(rewards, label=f'{agent.__class__.__name__} Reward')
+    plt.xlabel('Episode')
+    plt.ylabel('Total Reward')
+    plt.title(f'Training Reward Curve - {agent.__class__.__name__}')
+    plt.legend()
+    plt.show()
+
+    return rewards
+
+# ============================================================
+# 5️⃣ 흑/백 교대 대결 함수
+# ============================================================
+def duel_with_color_swap(env, q_agent, dqn_agent, episodes=30):
+    def play_match(env, black_agent, white_agent):
+        state = env.reset()
+        done = False
+        env.current_player = 1
+
+        while not done:
+            valid_moves = env.valid_moves()
+            if not valid_moves:
+                env.current_player = env.get_opponent()
+                if not env.valid_moves():
+                    break
+                continue
+
+            current_agent = black_agent if env.current_player == 1 else white_agent
+            if isinstance(current_agent, QLearningAgent):
+                action = current_agent.choose_action(state, valid_moves)
+            else:
+                action = current_agent.act(state, valid_moves)
+
+            state, _, done, _ = env.step(action)
+
+        black = np.sum(env.board == 1)
+        white = np.sum(env.board == 2)
+        return black, white
+
+    q_wins = dqn_wins = draws = 0
+    for i in range(episodes):
+        b, w = play_match(env, q_agent, dqn_agent)
+        if b > w: q_wins += 1
+        elif w > b: dqn_wins += 1
+        else: draws += 1
+    for i in range(episodes):
+        b, w = play_match(env, dqn_agent, q_agent)
+        if b > w: dqn_wins += 1
+        elif w > b: q_wins += 1
+        else: draws += 1
+
+    print(f"\n⚔️ 색상 교대 대결 결과 (총 {episodes*2}판)")
+    print(f"Q-learning 승: {q_wins}, DQN 승: {dqn_wins}, 무승부: {draws}")
+    print(f"DQN 종합 승률: {dqn_wins / (episodes*2):.2%} (색상 불문)")
+
+# ============================================================
+# 6️⃣ 실행
+# ============================================================
+env = OthelloEnv()
+
+print("🧩 Q-learning Agent 학습 중...")
+q_agent = QLearningAgent(env)
+train_agent(q_agent, episodes=1000)
+
+print("\n🧠 CNN 기반 DQN Agent 학습 중...")
+dqn_agent = DQNAgent(env)
+train_agent(dqn_agent, episodes=1000)
+
+print("\n⚔️ 흑/백 교대 대결 결과:")
+duel_with_color_swap(env, q_agent, dqn_agent, episodes=30)
+
+
