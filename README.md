@@ -30,8 +30,9 @@
   c. pip install torch   # 또는 tensorflow (DQN 구현 시 선택)
 
 4. 실행 방법
-Q-learning 산출물(q_table_othello.pkl), DQN 산출물(dqn_othello_model.pth)과 
-Evaluate_Agents파일을 한 폴더에 다운로드한 뒤, Evaluate_agents 파일을 실행시킨다. 
+- DQN 산출물(dqn_othello_model.pth) Evaluate_Agents 파일을 한 폴더에 다운로드
+- train_q_learning 파일을 다운로드(Q-learning 산출물 파일 크기가 1GB이상으로, 업로드가 불가함)하여 실행
+- Evaluate_agents 파일을 실행시켜 결과를 확인한다. 
 
 결과 예시. 
 [10/100 게임 완료] DQN 승: 10, QL 승: 0, 무승부: 0
